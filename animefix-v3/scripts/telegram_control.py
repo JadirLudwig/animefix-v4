@@ -1,41 +1,30 @@
 #!/usr/bin/env python3
 """
-AnimeFix Telegram Control Bot
-Bot de controle e monitoramento para o sistema AnimeFix v3.
-Gerencia uvicorn, cloudflared e envia URL efemera via Telegram.
+AnimeFix Telegram Control Bot (sem dependencias externas)
+Usa HTTP direto para a API do Telegram.
 """
 
 import os
 import re
 import sys
+import json
 import time
-import signal
 import subprocess
 import logging
+import urllib.request
+import urllib.parse
 from pathlib import Path
 from dotenv import load_dotenv
 
-from telegram import Update
-from telegram.ext import (
-    Updater,
-    CommandHandler,
-    MessageHandler,
-    Filters,
-    CallbackContext,
-)
-
-# Configurar logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler("/tmp/animefix-bot.log"),
     ],
 )
 logger = logging.getLogger(__name__)
 
-# Carregar variaveis de ambiente
 SCRIPT_DIR = Path(__file__).parent
 ENV_PATH = SCRIPT_DIR / ".env"
 load_dotenv(ENV_PATH)
@@ -47,7 +36,6 @@ UVICORN_CMD = os.getenv("UVICORN_CMD", "uvicorn app.main:app --host 0.0.0.0 --po
 CLOUDFLARED_CMD = os.getenv("CLOUDFLARED_CMD", "cloudflared tunnel --url http://localhost:8000")
 CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "60"))
 
-# Validar config
 if not BOT_TOKEN:
     logger.error("BOT_TOKEN nao encontrado no .env")
     sys.exit(1)
@@ -55,474 +43,268 @@ if CHAT_ID == 0:
     logger.error("CHAT_ID nao encontrado no .env")
     sys.exit(1)
 
-# Identificadores das sessoes tmux
-TMUX_SESSIONS = {
-    "animefix": UVICORN_CMD,
-    "cloudflared": CLOUDFLARED_CMD,
-}
+API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+offset = 0
 
 
-def is_authorized(update: Update) -> bool:
-    """Verifica se o usuario e o CHAT_ID autorizado."""
-    return update.effective_user.id == CHAT_ID
-
-
-def run_tmux_cmd(session: str, cmd: str) -> bool:
-    """Executa um comando dentro de uma sessao tmux existente."""
+def api_call(method, data=None):
+    url = f"{API_URL}/{method}"
+    if data:
+        encoded = urllib.parse.urlencode(data).encode("utf-8")
+        req = urllib.request.Request(url, data=encoded)
+    else:
+        req = urllib.request.Request(url)
     try:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", session, cmd, "Enter"],
-            capture_output=True,
-            timeout=5,
-        )
-        return True
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
     except Exception as e:
-        logger.error(f"Erro ao executar comando na sessao {session}: {e}")
-        return False
+        logger.error(f"API call failed: {method} - {e}")
+        return None
 
 
-def tmux_session_exists(session: str) -> bool:
-    """Verifica se uma sessao tmux existe."""
+def send_message(text, parse_mode="Markdown"):
+    return api_call("sendMessage", {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": parse_mode,
+    })
+
+
+def tmux_exists(session):
     try:
-        result = subprocess.run(
+        r = subprocess.run(
             ["tmux", "has-session", "-t", session],
-            capture_output=True,
-            timeout=5,
+            capture_output=True, timeout=5,
         )
-        return result.returncode == 0
+        return r.returncode == 0
     except Exception:
         return False
 
 
-def kill_tmux_session(session: str) -> bool:
-    """Mata uma sessao tmux."""
+def tmux_kill(session):
     try:
         subprocess.run(
             ["tmux", "kill-session", "-t", session],
-            capture_output=True,
-            timeout=5,
+            capture_output=True, timeout=5,
         )
-        return True
-    except Exception as e:
-        logger.error(f"Erro ao matar sessao {session}: {e}")
-        return False
+    except Exception:
+        pass
 
 
-def is_port_in_use(port: int) -> bool:
-    """Verifica se a porta esta em uso."""
+def tmux_create_and_send(session, cmd):
     try:
-        result = subprocess.run(
-            ["ss", "-tlnp"],
-            capture_output=True,
-            text=True,
-            timeout=5,
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session],
+            capture_output=True, timeout=5,
         )
-        return f":{port}" in result.stdout
+        subprocess.run(
+            ["tmux", "send-keys", "-t", session, cmd, "Enter"],
+            capture_output=True, timeout=5,
+        )
+    except Exception as e:
+        logger.error(f"Erro ao criar sessao {session}: {e}")
+
+
+def is_process_running(name):
+    try:
+        r = subprocess.run(
+            ["pgrep", "-f", name],
+            capture_output=True, timeout=5,
+        )
+        return r.returncode == 0
     except Exception:
         return False
 
 
-def get_cloudflared_url() -> str:
-    """Captura a URL efemera do Cloudflare a partir dos logs do tmux."""
+def get_cloudflared_url():
     try:
-        result = subprocess.run(
+        r = subprocess.run(
             ["tmux", "capture-pane", "-t", "cloudflared", "-p"],
-            capture_output=True,
-            text=True,
-            timeout=10,
+            capture_output=True, text=True, timeout=10,
         )
-        output = result.stdout
-        # Procurar padrao de URL do trycloudflare
-        urls = re.findall(
-            r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com[^\s]*",
-            output,
-        )
+        urls = re.findall(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com[^\s]*", r.stdout)
         if urls:
             return urls[-1]
-        # Fallback: procurar https:// generico
-        urls = re.findall(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com", output)
+        urls = re.findall(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com", r.stdout)
         if urls:
             return urls[-1]
         return ""
-    except Exception as e:
-        logger.error(f"Erro ao capturar URL do Cloudflare: {e}")
+    except Exception:
         return ""
 
 
-def start_animefix(context: CallbackContext) -> None:
-    """Inicia a sessao tmux do animefix (uvicorn)."""
-    if tmux_session_exists("animefix"):
-        logger.info("Sessao animefix ja existe")
+def start_animefix():
+    if tmux_exists("animefix"):
         return
-
-    try:
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", "animefix"],
-            capture_output=True,
-            timeout=5,
-        )
-        # Navegar para o diretorio do projeto e iniciar uvicorn
-        project_dir = SCRIPT_DIR.parent
-        run_tmux_cmd("animefix", f"cd {project_dir} && {UVICORN_CMD}")
-        logger.info("Sessao animefix iniciada")
-    except Exception as e:
-        logger.error(f"Erro ao iniciar animefix: {e}")
+    project_dir = SCRIPT_DIR.parent
+    tmux_create_and_send("animefix", f"cd {project_dir} && {UVICORN_CMD}")
+    logger.info("AnimeFix iniciado")
 
 
-def start_cloudflared(context: CallbackContext) -> None:
-    """Inicia a sessao tmux do cloudflared."""
-    if tmux_session_exists("cloudflared"):
-        logger.info("Sessao cloudflared ja existe")
+def start_cloudflared():
+    if tmux_exists("cloudflared"):
         return
-
-    try:
-        subprocess.run(
-            ["tmux", "new-session", "-d", "-s", "cloudflared"],
-            capture_output=True,
-            timeout=5,
-        )
-        run_tmux_cmd("cloudflared", CLOUDFLARED_CMD)
-        logger.info("Sessao cloudflared iniciada")
-    except Exception as e:
-        logger.error(f"Erro ao iniciar cloudflared: {e}")
+    tmux_create_and_send("cloudflared", CLOUDFLARED_CMD)
+    logger.info("Cloudflared iniciado")
 
 
-def monitor_services(context: CallbackContext) -> None:
-    """Verifica a saude dos servicos e envia alertas."""
-    if not context.job_queue:
-        return
-
-    animefix_ok = tmux_session_exists("animefix")
-    cloudflared_ok = tmux_session_exists("cloudflared")
-    port_ok = is_port_in_use(PORT)
-
-    # Verificar se o processo uvicorn ainda esta rodando
-    uvicorn_running = False
-    if animefix_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "uvicorn"],
-                capture_output=True,
-                timeout=5,
-            )
-            uvicorn_running = result.returncode == 0
-        except Exception:
-            pass
-
-    # Verificar se cloudflared ainda esta rodando
-    cloudflared_running = False
-    if cloudflared_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "cloudflared"],
-                capture_output=True,
-                timeout=5,
-            )
-            cloudflared_running = result.returncode == 0
-        except Exception:
-            pass
-
-    alerts = []
-    if not animefix_ok or not uvicorn_running:
-        alerts.append("❌ AnimeFix (uvicorn) esta OFFLINE!")
-    if not cloudflared_ok or not cloudflared_running:
-        alerts.append("❌ Cloudflared esta OFFLINE!")
-    elif animefix_ok and cloudflared_ok and uvicorn_running and cloudflared_running:
-        # Tudo OK, enviar URL se disponivel
-        url = get_cloudflared_url()
-        if url:
-            context.bot.send_message(
-                chat_id=CHAT_ID,
-                text=f"✅ Sistema online!\n\n🌐 URL: {url}",
-            )
-            return
-
-    if alerts:
-        alert_text = "⚠️ ALERTA DE SAUDE:\n\n" + "\n".join(alerts)
-        context.bot.send_message(chat_id=CHAT_ID, text=alert_text)
-        logger.warning(alert_text)
+def get_status():
+    af = tmux_exists("animefix") and is_process_running("uvicorn")
+    cf = tmux_exists("cloudflared") and is_process_running("cloudflared")
+    return af, cf
 
 
-def cmd_start(update: Update, context: CallbackContext) -> None:
-    """Comando /start - Lista de comandos."""
-    if not is_authorized(update):
-        update.message.reply_text("Acesso negado.")
-        return
-
-    msg = (
+def handle_start():
+    send_message(
         "🎮 *AnimeFix Control Bot*\n\n"
-        "Comandos disponiveis:\n"
-        "/status - Verificar saude dos servicos\n"
-        "/startapp - Iniciar todos os servicos\n"
-        "/stopapp - Parar todos os servicos\n"
-        "/restartapp - Reiniciar servicos\n"
-        "/geturl - Obter URL efemera do Cloudflare\n"
+        "Comandos:\n"
+        "/status - Verificar saude\n"
+        "/startapp - Iniciar servicos\n"
+        "/stopapp - Parar servicos\n"
+        "/restartapp - Reiniciar\n"
+        "/geturl - URL do Cloudflare"
     )
-    update.message.reply_text(msg, parse_mode="Markdown")
 
 
-def cmd_status(update: Update, context: CallbackContext) -> None:
-    """Comando /status - Verifica saude."""
-    if not is_authorized(update):
-        update.message.reply_text("Acesso negado.")
-        return
-
-    animefix_ok = tmux_session_exists("animefix")
-    cloudflared_ok = tmux_session_exists("cloudflared")
-    port_ok = is_port_in_use(PORT)
-
-    uvicorn_running = False
-    if animefix_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "uvicorn"],
-                capture_output=True,
-                timeout=5,
-            )
-            uvicorn_running = result.returncode == 0
-        except Exception:
-            pass
-
-    cloudflared_running = False
-    if cloudflared_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "cloudflared"],
-                capture_output=True,
-                timeout=5,
-            )
-            cloudflared_running = result.returncode == 0
-        except Exception:
-            pass
-
-    status_animefix = "✅ Online" if (animefix_ok and uvicorn_running) else "❌ Offline"
-    status_cloudflared = "✅ Online" if (cloudflared_ok and cloudflared_running) else "❌ Offline"
-    status_port = "✅ Em uso" if port_ok else "❌ Livre"
-
+def handle_status():
+    af, cf = get_status()
+    url = get_cloudflared_url() if (af and cf) else ""
     msg = (
-        f"📊 *Status do Sistema*\n\n"
-        f"AnimeFix (uvicorn): {status_animefix}\n"
-        f"Cloudflared: {status_cloudflared}\n"
-        f"Porta {PORT}: {status_port}\n"
+        f"📊 *Status*\n\n"
+        f"AnimeFix: {'✅ Online' if af else '❌ Offline'}\n"
+        f"Cloudflared: {'✅ Online' if cf else '❌ Offline'}"
     )
-
-    if animefix_ok and cloudflared_ok and uvicorn_running and cloudflared_running:
-        url = get_cloudflared_url()
-        if url:
-            msg += f"\n🌐 URL: {url}"
-
-    update.message.reply_text(msg, parse_mode="Markdown")
+    if url:
+        msg += f"\n\n🌐 URL: {url}"
+    send_message(msg)
 
 
-def cmd_startapp(update: Update, context: CallbackContext) -> None:
-    """Comando /startapp - Inicia todos os servicos."""
-    if not is_authorized(update):
-        update.message.reply_text("Acesso negado.")
-        return
-
-    update.message.reply_text("🚀 Iniciando servicos...")
-
-    # Iniciar uvicorn
-    start_animefix(context)
+def handle_startapp():
+    send_message("🚀 Iniciando servicos...")
+    start_animefix()
     time.sleep(2)
-
-    # Iniciar cloudflared
-    start_cloudflared(context)
-    time.sleep(5)
-
-    # Verificar se tudo subiu
-    animefix_ok = tmux_session_exists("animefix")
-    cloudflared_ok = tmux_session_exists("cloudflared")
-    uvicorn_running = False
-    if animefix_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "uvicorn"],
-                capture_output=True,
-                timeout=5,
-            )
-            uvicorn_running = result.returncode == 0
-        except Exception:
-            pass
-
-    cloudflared_running = False
-    if cloudflared_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "cloudflared"],
-                capture_output=True,
-                timeout=5,
-            )
-            cloudflared_running = result.returncode == 0
-        except Exception:
-            pass
-
-    if animefix_ok and cloudflared_ok and uvicorn_running and cloudflared_running:
+    start_cloudflared()
+    time.sleep(8)
+    af, cf = get_status()
+    if af and cf:
         url = get_cloudflared_url()
         if url:
-            update.message.reply_text(
-                f"✅ Todos os servicos iniciados!\n\n🌐 URL: {url}"
-            )
+            send_message(f"✅ Servicos iniciados!\n\n🌐 URL: {url}")
         else:
-            update.message.reply_text(
-                "✅ Servicos iniciados! URL do Cloudflare sera disponibilizada em breve."
-            )
+            send_message("✅ Servicos iniciados! URL sera disponibilizada em breve.")
     else:
-        update.message.reply_text(
-            "⚠️ Alguns servicos podem nao ter iniciado corretamente. Use /status para verificar."
-        )
+        send_message("⚠️ Alguns servicos podem nao ter iniciado. Use /status")
 
 
-def cmd_stopapp(update: Update, context: CallbackContext) -> None:
-    """Comando /stopapp - Para todos os servicos."""
-    if not is_authorized(update):
-        update.message.reply_text("Acesso negado.")
-        return
-
-    update.message.reply_text("⏹️ Parando servicos...")
-
-    kill_tmux_session("animefix")
-    kill_tmux_session("cloudflared")
-
-    update.message.reply_text("✅ Todos os servicos foram parados.")
+def handle_stopapp():
+    send_message("⏹️ Parando servicos...")
+    tmux_kill("animefix")
+    tmux_kill("cloudflared")
+    send_message("✅ Servicos parados.")
 
 
-def cmd_restartapp(update: Update, context: CallbackContext) -> None:
-    """Comando /restartapp - Reinicia servicos."""
-    if not is_authorized(update):
-        update.message.reply_text("Acesso negado.")
-        return
-
-    update.message.reply_text("🔄 Reiniciando servicos...")
-
-    # Parar
-    kill_tmux_session("animefix")
-    kill_tmux_session("cloudflared")
+def handle_restartapp():
+    send_message("🔄 Reiniciando...")
+    tmux_kill("animefix")
+    tmux_kill("cloudflared")
     time.sleep(2)
-
-    # Iniciar
-    start_animefix(context)
+    start_animefix()
     time.sleep(2)
-    start_cloudflared(context)
-    time.sleep(5)
-
-    # Verificar
-    animefix_ok = tmux_session_exists("animefix")
-    cloudflared_ok = tmux_session_exists("cloudflared")
-    uvicorn_running = False
-    if animefix_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "uvicorn"],
-                capture_output=True,
-                timeout=5,
-            )
-            uvicorn_running = result.returncode == 0
-        except Exception:
-            pass
-
-    cloudflared_running = False
-    if cloudflared_ok:
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "cloudflared"],
-                capture_output=True,
-                timeout=5,
-            )
-            cloudflared_running = result.returncode == 0
-        except Exception:
-            pass
-
-    if animefix_ok and cloudflared_ok and uvicorn_running and cloudflared_running:
+    start_cloudflared()
+    time.sleep(8)
+    af, cf = get_status()
+    if af and cf:
         url = get_cloudflared_url()
         if url:
-            update.message.reply_text(
-                f"✅ Servicos reiniciados!\n\n🌐 URL: {url}"
-            )
+            send_message(f"✅ Reiniciado!\n\n🌐 URL: {url}")
         else:
-            update.message.reply_text(
-                "✅ Servicos reiniciados! URL do Cloudflare sera disponibilizada em breve."
-            )
+            send_message("✅ Reiniciado! URL sera disponibilizada em breve.")
     else:
-        update.message.reply_text(
-            "⚠️ Alguns servicos podem nao ter reiniciado corretamente. Use /status."
-        )
+        send_message("⚠️ Problemas ao reiniciar. Use /status")
 
 
-def cmd_geturl(update: Update, context: CallbackContext) -> None:
-    """Comando /geturl - Envia a URL efemera."""
-    if not is_authorized(update):
-        update.message.reply_text("Acesso negado.")
-        return
-
+def handle_geturl():
     url = get_cloudflared_url()
     if url:
-        update.message.reply_text(f"🌐 URL efemera:\n{url}")
+        send_message(f"🌐 URL:\n{url}")
     else:
-        update.message.reply_text(
-            "❌ URL nao encontrada. Verifique se o Cloudflared esta rodando com /status"
-        )
+        send_message("❌ URL nao encontrada. Verifique com /status")
 
 
-def handle_unknown(update: Update, context: CallbackContext) -> None:
-    """Trata mensagens desconhecidas."""
-    if not is_authorized(update):
-        return
-    update.message.reply_text("Comando nao reconhecido. Use /start para ver os comandos disponiveis.")
-
-
-def main() -> None:
-    """Funcao principal do bot."""
+def main():
+    global offset
     logger.info("Iniciando AnimeFix Control Bot...")
 
-    # Criar updater
-    updater = Updater(token=BOT_TOKEN)
-    dispatcher = updater.dispatcher
+    resp = api_call("getMe")
+    if not resp or not resp.get("ok"):
+        logger.error("Falha ao conectar com a API do Telegram. Verifique o BOT_TOKEN.")
+        sys.exit(1)
+    bot_name = resp["result"].get("username", "desconhecido")
+    logger.info(f"Bot conectado: @{bot_name}")
 
-    # Registrar comandos
-    dispatcher.add_handler(CommandHandler("start", cmd_start))
-    dispatcher.add_handler(CommandHandler("status", cmd_status))
-    dispatcher.add_handler(CommandHandler("startapp", cmd_startapp))
-    dispatcher.add_handler(CommandHandler("stopapp", cmd_stopapp))
-    dispatcher.add_handler(CommandHandler("restartapp", cmd_restartapp))
-    dispatcher.add_handler(CommandHandler("geturl", cmd_geturl))
-
-    # Mensagens desconhecidas
-    dispatcher.add_handler(
-        MessageHandler(Filters.text & ~Filters.command, handle_unknown)
-    )
-
-    # Iniciar monitoramento periodico
-    job_queue = updater.job_queue
-    if job_queue:
-        job_queue.run_repeating(
-            monitor_services,
-            interval=CHECK_INTERVAL,
-            first=10,
-            name="health_check",
-        )
-        logger.info(f"Monitoramento configurado: a cada {CHECK_INTERVAL}s")
-
-    # Iniciar bot
-    updater.start_polling()
-    logger.info("Bot rodando! Envie /start no Telegram.")
-
-    # Enviar mensagem de inicializacao
     try:
-        updater.bot.send_message(
-            chat_id=CHAT_ID,
-            text=(
-                "🎮 *AnimeFix Control Bot Iniciado!*\n\n"
-                "Envie /start para ver os comandos disponiveis."
-            ),
-            parse_mode="Markdown",
+        send_message(
+            "🎮 *AnimeFix Control Bot Iniciado!*\n\n"
+            "Envie /start para ver os comandos."
         )
     except Exception as e:
-        logger.error(f"Erro ao enviar mensagem de inicio: {e}")
+        logger.error(f"Erro ao enviar msg inicial: {e}")
 
-    # Manter rodando
-    updater.idle()
-    logger.info("Bot encerrado.")
+    logger.info(f"Monitoramento a cada {CHECK_INTERVAL}s. Polling mensagens...")
+
+    last_check = time.time()
+
+    while True:
+        try:
+            resp = api_call("getUpdates", {
+                "offset": offset,
+                "timeout": 30,
+            })
+
+            if resp and resp.get("ok") and resp.get("result"):
+                for update in resp["result"]:
+                    offset = update["update_id"] + 1
+                    msg = update.get("message", {})
+                    chat_id = msg.get("chat", {}).get("id", 0)
+                    text = msg.get("text", "")
+
+                    if chat_id != CHAT_ID:
+                        continue
+
+                    logger.info(f"Comando recebido: {text}")
+
+                    if text == "/start":
+                        handle_start()
+                    elif text == "/status":
+                        handle_status()
+                    elif text == "/startapp":
+                        handle_startapp()
+                    elif text == "/stopapp":
+                        handle_stopapp()
+                    elif text == "/restartapp":
+                        handle_restartapp()
+                    elif text == "/geturl":
+                        handle_geturl()
+
+            now = time.time()
+            if now - last_check >= CHECK_INTERVAL:
+                last_check = now
+                af, cf = get_status()
+                if not af or not cf:
+                    alerts = []
+                    if not af:
+                        alerts.append("❌ AnimeFix (uvicorn) OFFLINE!")
+                    if not cf:
+                        alerts.append("❌ Cloudflared OFFLINE!")
+                    send_message("⚠️ ALERTA:\n\n" + "\n".join(alerts))
+
+        except KeyboardInterrupt:
+            logger.info("Bot encerrado pelo usuario.")
+            break
+        except Exception as e:
+            logger.error(f"Erro no loop: {e}")
+            time.sleep(5)
 
 
 if __name__ == "__main__":
