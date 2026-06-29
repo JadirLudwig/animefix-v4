@@ -1,0 +1,6 @@
+Este é o endereço do site que quero integrar:https://meusanimes.blog/
+Este é um exemplo de link de episódios de anime que deve ser usado: https://meusanimes.blog/a/avatar-aang-the-last-airbender-2026/
+
+neste link de episódio o episódio 1 tem 3 opções de links para assistir oque se difere do nosso site padrão que não nos da opções. Neste novo site alguns animes também não possuem opção de escolha de servidor para assistir e outros possuem.
+
+Um exemplo de anime sem escolha de servidor para assistir:  https://meusanimes.blog/a/haibara-kun-no-tsuyokute-seishun-new-game/
