@@ -155,10 +155,10 @@ def start_animefix():
     if tmux_exists("animefix"):
         logger.info("Sessao animefix ja existe")
         return
-    project_dir = str(SCRIPT_DIR.parent)
-    ok = tmux_create_and_send("animefix", UVICORN_CMD, workdir=project_dir)
+    wrapper = str(SCRIPT_DIR / "run_uvicorn.sh")
+    ok = tmux_create_and_send("animefix", wrapper)
     if ok:
-        logger.info(f"AnimeFix iniciado em {project_dir}")
+        logger.info(f"AnimeFix iniciado via {wrapper}")
     else:
         logger.error("Falha ao iniciar AnimeFix")
         send_message("❌ Erro ao criar sessao tmux para AnimeFix")
@@ -168,7 +168,8 @@ def start_cloudflared():
     if tmux_exists("cloudflared"):
         logger.info("Sessao cloudflared ja existe")
         return
-    ok = tmux_create_and_send("cloudflared", CLOUDFLARED_CMD)
+    wrapper = str(SCRIPT_DIR / "run_cloudflared.sh")
+    ok = tmux_create_and_send("cloudflared", wrapper)
     if ok:
         logger.info("Cloudflared iniciado")
     else:

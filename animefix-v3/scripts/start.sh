@@ -17,7 +17,7 @@ echo ""
 # Tornar scripts executaveis
 chmod +x "$SCRIPT_DIR/run_uvicorn.sh"
 chmod +x "$SCRIPT_DIR/run_cloudflared.sh"
-chmod +x "$SCRIPT_DIR/telegram_control.py"
+chmod +x "$SCRIPT_DIR/run_bot.sh"
 
 # Parar sessoes existentes
 echo -e "${YELLOW}Parando sessoes anteriores...${NC}"
@@ -53,7 +53,7 @@ fi
 
 # ===== INICIAR BOT =====
 echo -e "${GREEN}[3/3] Iniciando Bot...${NC}"
-tmux new-session -d -s control "cd $SCRIPT_DIR && python3 telegram_control.py"
+tmux new-session -d -s control "$SCRIPT_DIR/run_bot.sh"
 sleep 2
 
 if tmux has-session -t control 2>/dev/null; then
