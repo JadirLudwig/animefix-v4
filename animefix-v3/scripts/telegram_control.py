@@ -92,16 +92,25 @@ def tmux_kill(session):
         pass
 
 
-def tmux_create_and_send(session, cmd):
+def tmux_create_and_send(session, cmd, workdir=None):
     try:
+        if not workdir:
+            workdir = str(SCRIPT_DIR.parent)
         subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session],
+            ["tmux", "kill-session", "-t", session],
             capture_output=True, timeout=5,
         )
+        time.sleep(0.5)
+        subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session, "-c", workdir],
+            capture_output=True, timeout=5,
+        )
+        time.sleep(0.5)
         subprocess.run(
             ["tmux", "send-keys", "-t", session, cmd, "Enter"],
             capture_output=True, timeout=5,
         )
+        logger.info(f"Sessao '{session}' criada com dir: {workdir}")
     except Exception as e:
         logger.error(f"Erro ao criar sessao {session}: {e}")
 
@@ -137,9 +146,9 @@ def get_cloudflared_url():
 def start_animefix():
     if tmux_exists("animefix"):
         return
-    project_dir = SCRIPT_DIR.parent
-    tmux_create_and_send("animefix", f"cd {project_dir} && {UVICORN_CMD}")
-    logger.info("AnimeFix iniciado")
+    project_dir = str(SCRIPT_DIR.parent)
+    tmux_create_and_send("animefix", UVICORN_CMD, workdir=project_dir)
+    logger.info(f"AnimeFix iniciado em {project_dir}")
 
 
 def start_cloudflared():
@@ -170,10 +179,26 @@ def handle_start():
 def handle_status():
     af, cf = get_status()
     url = get_cloudflared_url() if (af and cf) else ""
+
+    uvicorn_pid = ""
+    cloudflared_pid = ""
+    try:
+        r = subprocess.run(["pgrep", "-f", "uvicorn"], capture_output=True, text=True, timeout=5)
+        if r.stdout.strip():
+            uvicorn_pid = r.stdout.strip().split("\n")[0]
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["pgrep", "-f", "cloudflared"], capture_output=True, text=True, timeout=5)
+        if r.stdout.strip():
+            cloudflared_pid = r.stdout.strip().split("\n")[0]
+    except Exception:
+        pass
+
     msg = (
         f"📊 *Status*\n\n"
-        f"AnimeFix: {'✅ Online' if af else '❌ Offline'}\n"
-        f"Cloudflared: {'✅ Online' if cf else '❌ Offline'}"
+        f"AnimeFix: {'✅ Online (PID: ' + uvicorn_pid + ')' if af else '❌ Offline'}\n"
+        f"Cloudflared: {'✅ Online (PID: ' + cloudflared_pid + ')' if cf else '❌ Offline'}"
     )
     if url:
         msg += f"\n\n🌐 URL: {url}"
@@ -183,18 +208,23 @@ def handle_status():
 def handle_startapp():
     send_message("🚀 Iniciando servicos...")
     start_animefix()
-    time.sleep(2)
+    time.sleep(3)
     start_cloudflared()
-    time.sleep(8)
+    time.sleep(10)
     af, cf = get_status()
+    url = get_cloudflared_url() if (af and cf) else ""
     if af and cf:
-        url = get_cloudflared_url()
         if url:
             send_message(f"✅ Servicos iniciados!\n\n🌐 URL: {url}")
         else:
             send_message("✅ Servicos iniciados! URL sera disponibilizada em breve.")
     else:
-        send_message("⚠️ Alguns servicos podem nao ter iniciado. Use /status")
+        errors = []
+        if not af:
+            errors.append("❌ AnimeFix nao iniciou")
+        if not cf:
+            errors.append("❌ Cloudflared nao iniciou")
+        send_message("⚠️ Problemas ao iniciar:\n" + "\n".join(errors) + "\n\nUse /status para mais detalhes.")
 
 
 def handle_stopapp():
@@ -210,18 +240,23 @@ def handle_restartapp():
     tmux_kill("cloudflared")
     time.sleep(2)
     start_animefix()
-    time.sleep(2)
+    time.sleep(3)
     start_cloudflared()
-    time.sleep(8)
+    time.sleep(10)
     af, cf = get_status()
+    url = get_cloudflared_url() if (af and cf) else ""
     if af and cf:
-        url = get_cloudflared_url()
         if url:
             send_message(f"✅ Reiniciado!\n\n🌐 URL: {url}")
         else:
             send_message("✅ Reiniciado! URL sera disponibilizada em breve.")
     else:
-        send_message("⚠️ Problemas ao reiniciar. Use /status")
+        errors = []
+        if not af:
+            errors.append("❌ AnimeFix nao iniciou")
+        if not cf:
+            errors.append("❌ Cloudflared nao iniciou")
+        send_message("⚠️ Problemas ao reiniciar:\n" + "\n".join(errors))
 
 
 def handle_geturl():
