@@ -135,9 +135,18 @@ def is_process_running(name):
 
 
 def get_cloudflared_url():
+    url_file = "/tmp/animefix_url.txt"
+    try:
+        if os.path.exists(url_file):
+            with open(url_file, "r") as f:
+                url = f.read().strip()
+                if url:
+                    return url
+    except Exception:
+        pass
     try:
         r = subprocess.run(
-            ["tmux", "capture-pane", "-t", "cloudflared", "-p"],
+            ["tmux", "capture-pane", "-t", "cloudflared", "-p", "-S", "-"],
             capture_output=True, text=True, timeout=10,
         )
         urls = re.findall(r"https://[a-zA-Z0-9\-]+\.trycloudflare\.com[^\s]*", r.stdout)
@@ -229,27 +238,42 @@ def handle_startapp():
     start_animefix()
     time.sleep(3)
     start_cloudflared()
-    time.sleep(10)
+
+    send_message("⏳ Aguardando URL do Cloudflare...")
+    url = ""
+    for i in range(12):
+        time.sleep(3)
+        url = get_cloudflared_url()
+        if url:
+            break
+
     af, cf = get_status()
-    url = get_cloudflared_url() if (af and cf) else ""
     if af and cf:
         if url:
             send_message(f"✅ Servicos iniciados!\n\n🌐 URL: {url}")
         else:
-            send_message("✅ Servicos iniciados! URL sera disponibilizada em breve.")
+            send_message("✅ Servicos iniciados! Use /geturl para obter a URL.")
     else:
         errors = []
         if not af:
             errors.append("❌ AnimeFix nao iniciou")
         if not cf:
             errors.append("❌ Cloudflared nao iniciou")
-        send_message("⚠️ Problemas ao iniciar:\n" + "\n".join(errors) + "\n\nUse /status para mais detalhes.")
+        send_message("⚠️ Problemas ao iniciar:\n" + "\n".join(errors))
 
 
 def handle_stopapp():
     send_message("⏹️ Parando servicos...")
     tmux_kill("animefix")
     tmux_kill("cloudflared")
+    try:
+        os.remove("/tmp/animefix_url.txt")
+    except Exception:
+        pass
+    try:
+        os.remove("/tmp/animefix_cloudflared.log")
+    except Exception:
+        pass
     send_message("✅ Servicos parados.")
 
 
@@ -261,14 +285,21 @@ def handle_restartapp():
     start_animefix()
     time.sleep(3)
     start_cloudflared()
-    time.sleep(10)
+
+    send_message("⏳ Aguardando URL do Cloudflare...")
+    url = ""
+    for i in range(12):
+        time.sleep(3)
+        url = get_cloudflared_url()
+        if url:
+            break
+
     af, cf = get_status()
-    url = get_cloudflared_url() if (af and cf) else ""
     if af and cf:
         if url:
             send_message(f"✅ Reiniciado!\n\n🌐 URL: {url}")
         else:
-            send_message("✅ Reiniciado! URL sera disponibilizada em breve.")
+            send_message("✅ Reiniciado! Use /geturl para obter a URL.")
     else:
         errors = []
         if not af:
