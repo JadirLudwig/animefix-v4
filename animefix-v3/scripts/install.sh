@@ -36,7 +36,7 @@ fi
 
 # Instalar dependencias Python
 echo -e "${GREEN}Instalando dependencias Python...${NC}"
-pip3 install python-telegram-bot==13.15 python-dotenv --quiet
+pip3 install python-dotenv --quiet
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✅ Dependencias Python instaladas${NC}"
 else
@@ -70,10 +70,23 @@ if ! command -v cloudflared &> /dev/null; then
 fi
 echo -e "${GREEN}✅ cloudflared verificado${NC}"
 
-# Criar .env a partir do template (se nao existir)
+# Criar .env (se nao existir)
 if [ ! -f "$SCRIPT_DIR/.env" ]; then
     echo -e "${YELLOW}Criando arquivo .env...${NC}"
-    cp "$SCRIPT_DIR/.env.template" "$SCRIPT_DIR/.env"
+    # Tentar copiar do template primeiro
+    if [ -f "$SCRIPT_DIR/.env.template" ]; then
+        cp "$SCRIPT_DIR/.env.template" "$SCRIPT_DIR/.env"
+    else
+        # Se o template nao existir, criar direto
+        cat > "$SCRIPT_DIR/.env" << 'EOF'
+BOT_TOKEN=SEU_BOT_TOKEN_AQUI
+CHAT_ID=SEU_CHAT_ID_AQUI
+PORT=8000
+UVICORN_CMD=uvicorn app.main:app --host 0.0.0.0 --port 8000
+CLOUDFLARED_CMD=cloudflared tunnel --url http://localhost:8000
+CHECK_INTERVAL=60
+EOF
+    fi
     echo -e "${GREEN}✅ Arquivo .env criado${NC}"
     echo -e "${YELLOW}IMPORTANTE: Edite o .env com seus tokens:${NC}"
     echo -e "${CYAN}nano $SCRIPT_DIR/.env${NC}"

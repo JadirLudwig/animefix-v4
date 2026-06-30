@@ -101,18 +101,26 @@ def tmux_create_and_send(session, cmd, workdir=None):
             capture_output=True, timeout=5,
         )
         time.sleep(0.5)
-        subprocess.run(
+        result = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session, "-c", workdir],
-            capture_output=True, timeout=5,
+            capture_output=True, text=True, timeout=5,
         )
+        if result.returncode != 0:
+            logger.error(f"tmux new-session falhou: {result.stderr}")
+            return False
         time.sleep(0.5)
-        subprocess.run(
+        result = subprocess.run(
             ["tmux", "send-keys", "-t", session, cmd, "Enter"],
-            capture_output=True, timeout=5,
+            capture_output=True, text=True, timeout=5,
         )
-        logger.info(f"Sessao '{session}' criada com dir: {workdir}")
+        if result.returncode != 0:
+            logger.error(f"tmux send-keys falhou: {result.stderr}")
+            return False
+        logger.info(f"Sessao '{session}' criada em {workdir}")
+        return True
     except Exception as e:
         logger.error(f"Erro ao criar sessao {session}: {e}")
+        return False
 
 
 def is_process_running(name):
@@ -145,17 +153,27 @@ def get_cloudflared_url():
 
 def start_animefix():
     if tmux_exists("animefix"):
+        logger.info("Sessao animefix ja existe")
         return
     project_dir = str(SCRIPT_DIR.parent)
-    tmux_create_and_send("animefix", UVICORN_CMD, workdir=project_dir)
-    logger.info(f"AnimeFix iniciado em {project_dir}")
+    ok = tmux_create_and_send("animefix", UVICORN_CMD, workdir=project_dir)
+    if ok:
+        logger.info(f"AnimeFix iniciado em {project_dir}")
+    else:
+        logger.error("Falha ao iniciar AnimeFix")
+        send_message("❌ Erro ao criar sessao tmux para AnimeFix")
 
 
 def start_cloudflared():
     if tmux_exists("cloudflared"):
+        logger.info("Sessao cloudflared ja existe")
         return
-    tmux_create_and_send("cloudflared", CLOUDFLARED_CMD)
-    logger.info("Cloudflared iniciado")
+    ok = tmux_create_and_send("cloudflared", CLOUDFLARED_CMD)
+    if ok:
+        logger.info("Cloudflared iniciado")
+    else:
+        logger.error("Falha ao iniciar Cloudflared")
+        send_message("❌ Erro ao criar sessao tmux para Cloudflared")
 
 
 def get_status():

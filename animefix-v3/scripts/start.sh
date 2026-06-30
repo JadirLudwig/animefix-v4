@@ -1,95 +1,77 @@
 #!/bin/bash
-# AnimeFix - Script de Inicializacao
+# AnimeFix - Script de Inicializacao (v2)
 # Inicia uvicorn, cloudflared e o bot de controle do Telegram
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Cores para output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
 echo -e "${GREEN}=== AnimeFix - Iniciando Servicos ===${NC}"
+echo -e "${YELLOW}Projeto: $PROJECT_DIR${NC}"
+echo ""
 
-# Verificar se tmux esta instalado
-if ! command -v tmux &> /dev/null; then
-    echo -e "${RED}tmux nao encontrado! Instale com: pkg install tmux${NC}"
-    exit 1
-fi
+# Tornar scripts executaveis
+chmod +x "$SCRIPT_DIR/run_uvicorn.sh"
+chmod +x "$SCRIPT_DIR/run_cloudflared.sh"
+chmod +x "$SCRIPT_DIR/telegram_control.py"
 
-# Verificar se o .env existe
-if [ ! -f "$SCRIPT_DIR/.env" ]; then
-    echo -e "${RED}Arquivo .env nao encontrado!${NC}"
-    echo -e "${YELLOW}Execute: ./scripts/install.sh${NC}"
-    exit 1
-fi
-
-# Carregar variaveis do .env
-source "$SCRIPT_DIR/.env"
-
-# Parar sessoes existentes (se houver)
+# Parar sessoes existentes
 echo -e "${YELLOW}Parando sessoes anteriores...${NC}"
 tmux kill-session -t animefix 2>/dev/null
 tmux kill-session -t cloudflared 2>/dev/null
 tmux kill-session -t control 2>/dev/null
 sleep 1
 
-# Iniciar uvicorn (AnimeFix)
-echo -e "${GREEN}Iniciando AnimeFix (uvicorn)...${NC}"
-cd "$PROJECT_DIR"
-tmux new-session -d -s animefix
-tmux send-keys -t animefix "$UVICORN_CMD" Enter
+# ===== INICIAR UVICORN =====
+echo -e "${GREEN}[1/3] Iniciando AnimeFix...${NC}"
+tmux new-session -d -s animefix "$SCRIPT_DIR/run_uvicorn.sh"
 sleep 3
 
-# Verificar se uvicorn iniciou
-if tmux has-session -t animefix 2>/dev/null; then
-    echo -e "${GREEN}✅ AnimeFix iniciado na sessao 'animefix'${NC}"
+if ss -tlnp 2>/dev/null | grep -q ":8000"; then
+    echo -e "${GREEN}✅ AnimeFix rodando na porta 8000${NC}"
 else
-    echo -e "${RED}❌ Erro ao iniciar AnimeFix${NC}"
+    echo -e "${RED}❌ AnimeFix pode nao ter iniciado${NC}"
+    echo -e "${YELLOW}Logs:${NC}"
+    tmux capture-pane -p -t animefix 2>/dev/null | tail -10
 fi
 
-# Iniciar cloudflared
-echo -e "${GREEN}Iniciando Cloudflared...${NC}"
-tmux new-session -d -s cloudflared
-tmux send-keys -t cloudflared "$CLOUDFLARED_CMD" Enter
-sleep 5
+# ===== INICIAR CLOUDFLARED =====
+echo -e "${GREEN}[2/3] Iniciando Cloudflared...${NC}"
+tmux new-session -d -s cloudflared "$SCRIPT_DIR/run_cloudflared.sh"
+sleep 8
 
-# Capturar URL do Cloudflare
-echo -e "${YELLOW}Aguardando URL do Cloudflare...${NC}"
-sleep 3
 URL=$(tmux capture-pane -p -t cloudflared 2>/dev/null | grep -oP 'https://[a-zA-Z0-9-]+\.trycloudflare\.com' | tail -1)
-
 if [ -n "$URL" ]; then
-    echo -e "${GREEN}✅ URL do Cloudflare: $URL${NC}"
+    echo -e "${GREEN}✅ URL: $URL${NC}"
 else
-    echo -e "${YELLOW}⏳ URL ainda nao disponivel, sera capturada pelo bot...${NC}"
+    echo -e "${YELLOW}⏳ URL ainda nao disponivel...${NC}"
 fi
 
-# Iniciar bot de controle
-echo -e "${GREEN}Iniciando Bot de Controle...${NC}"
-tmux new-session -d -s control
-tmux send-keys -t control "cd $SCRIPT_DIR && python telegram_control.py" Enter
+# ===== INICIAR BOT =====
+echo -e "${GREEN}[3/3] Iniciando Bot...${NC}"
+tmux new-session -d -s control "cd $SCRIPT_DIR && python3 telegram_control.py"
 sleep 2
 
-# Verificar se o bot iniciou
 if tmux has-session -t control 2>/dev/null; then
-    echo -e "${GREEN}✅ Bot de Controle iniciado na sessao 'control'${NC}"
+    echo -e "${GREEN}✅ Bot iniciado${NC}"
 else
-    echo -e "${RED}❌ Erro ao iniciar Bot de Controle${NC}"
+    echo -e "${RED}❌ Bot nao iniciou${NC}"
 fi
 
+# ===== RESUMO =====
 echo ""
-echo -e "${GREEN}=== Todos os servicos iniciados! ===${NC}"
-echo -e "${GREEN}Sessoes tmux:${NC}"
-echo -e "  - animefix: uvicorn"
-echo -e "  - cloudflared: tunel"
-echo -e "  - control: bot telegram"
+echo -e "${GREEN}=== Status ===${NC}"
+echo -e "  uvicorn:    $(ss -tlnp 2>/dev/null | grep -q ':8000' && echo '✅ Online' || echo '❌ Offline')"
+echo -e "  cloudflared: $(tmux has-session -t cloudflared 2>/dev/null && echo '✅ Online' || echo '❌ Offline')"
+echo -e "  bot:        $(tmux has-session -t control 2>/dev/null && echo '✅ Online' || echo '❌ Offline')"
+[ -n "$URL" ] && echo -e "\n  🌐 URL: $URL"
 echo ""
-echo -e "${YELLOW}Comandos uteis:${NC}"
-echo -e "  tmux attach -t animefix    # Ver logs do uvicorn"
-echo -e "  tmux attach -t cloudflared # Ver logs do cloudflared"
-echo -e "  tmux attach -t control     # Ver logs do bot"
+echo -e "${YELLOW}Logs:${NC}"
+echo -e "  tmux attach -t animefix"
+echo -e "  tmux attach -t cloudflared"
+echo -e "  tmux attach -t control"
 echo ""
-echo -e "${GREEN}Use o Telegram para controlar os servicos!${NC}"
